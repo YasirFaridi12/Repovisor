@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>RepoVisor</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+:root{--bg:#f3f5f2;--panel:#fff;--ink:#1d2a26;--mute:#66736e;--line:#d5dcd7;--acc:#1f6f5c;--warn:#a4571a}
+@media(prefers-color-scheme:dark){:root{--bg:#141b19;--panel:#1b2421;--ink:#e4ebe7;--mute:#8d9b95;--line:#2c3834;--acc:#5fc2a6;--warn:#e0a064}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif;display:grid;grid-template-rows:auto 1fr}
+header{display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font:600 22px Fraunces,Georgia,serif;margin:0 12px 0 0}
+input{background:var(--panel);color:var(--ink);border:1px solid var(--line);padding:7px 10px;border-radius:6px;font:inherit}
+button{background:var(--acc);color:var(--bg);border:0;padding:7px 14px;border-radius:6px;font:500 14px inherit;cursor:pointer}
+button.alt{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+main{display:grid;grid-template-columns:3fr 2fr;min-height:0}
+@media(max-width:800px){main{grid-template-columns:1fr;grid-template-rows:45vh 1fr}}
+#graph{border-right:1px solid var(--line);position:relative;min-height:0}
+#graph svg{width:100%;height:100%}#tip{position:absolute;left:10px;bottom:8px;color:var(--mute);font-size:13px}
+#chat{display:flex;flex-direction:column;min-height:0}
+#log{flex:1;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.msg{white-space:pre-wrap;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.msg.me{align-self:flex-end;background:var(--acc);color:var(--bg);border:0}
+.src{color:var(--mute);font-size:12px;margin-top:6px}.warn{color:var(--warn);font-size:13px;margin-top:6px}
+#bar{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--line)}#bar input{flex:1}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 16px 8px}
+</style></head><body>
+<header><h1>RepoVisor</h1>
+<input id="src" size="34" placeholder="GitHub URL or local path">
+<input id="tok" type="password" size="16" placeholder="Read-only token (optional)">
+<button id="go">Index repository</button><button id="ev" class="alt">Run quality check</button><span id="st" style="color:var(--mute)"></span></header>
+<main>
+<section id="graph"><svg></svg><div id="tip">Index a repository to see how its modules depend on each other.</div></section>
+<section id="chat"><div id="log"></div>
+<div class="chips" id="chips"></div>
+<div id="bar"><input id="q" placeholder="Where is authentication implemented?"><button id="ask">Ask</button></div></section>
+</main>
+<script>
+let rid=null;const $=id=>document.getElementById(id);
+const Q=["Explain the architecture of this repository","Where is authentication implemented?","Give me a step-by-step onboarding plan for this project"];
+Q.forEach(t=>{const b=document.createElement("button");b.className="alt";b.textContent=t;b.onclick=()=>{$("q").value=t;ask()};$("chips").append(b)});
+function add(text,cls,extra){const d=document.createElement("div");d.className="msg "+(cls||"");d.textContent=text;
+ if(extra)d.append(...extra);$("log").append(d);$("log").scrollTop=1e9;return d}
+function note(cls,t){const e=document.createElement("div");e.className=cls;e.textContent=t;return e}
+async function api(url,opt){const r=await fetch(url,opt);const j=await r.json();if(!r.ok)throw new Error(j.detail||"Request failed");return j}
+$("go").onclick=async()=>{$("st").textContent="Indexing... this can take a few minutes.";
+ try{const r=await api("/api/repos",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:$("src").value.trim(),token:$("tok").value||null})});
+  rid=r.id;$("tok").value="";$("st").textContent=`${r.files} files, ${r.symbols} symbols, ${r.edges} dependencies`;draw(await api(`/api/repos/${rid}/graph`))}
+ catch(e){$("st").textContent="Error: "+e.message}};
+async function ask(){const q=$("q").value.trim();if(!q||!rid)return add("Index a repository first.");
+ add(q,"me");$("q").value="";const w=add("Searching the repository...");
+ try{const r=await api(`/api/repos/${rid}/ask`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})});
+  w.textContent=r.answer;const ex=[note("src","Sources: "+r.sources.map(s=>`${s.file}:${s.start}-${s.end}`).join(", "))];
+  if(r.unverified_citations.length)ex.push(note("warn","Citations not found in retrieved evidence: "+r.unverified_citations.join(", ")));
+  w.append(...ex);highlight(new Set(r.sources.map(s=>s.file)))}
+ catch(e){w.textContent="Error: "+e.message}}
+$("ev").onclick=async()=>{if(!rid)return $("st").textContent="Index a repository first.";$("st").textContent="Testing retrieval...";
+ try{const r=await api(`/api/repos/${rid}/eval`);$("st").textContent=`Quality check: right file in top 5 for ${Math.round(r.recall_at_k*100)}% of ${r.questions} questions (MRR ${r.mrr}), ${r.avg_ms} ms per search`}catch(e){$("st").textContent="Error: "+e.message}};
+$("ask").onclick=ask;$("q").onkeydown=e=>{if(e.key==="Enter")ask()};
+let nodeSel;function highlight(s){nodeSel&&nodeSel.attr("stroke-width",d=>s.has(d.id)?4:1).attr("stroke",d=>s.has(d.id)?"var(--warn)":"var(--bg)")}
+function draw(g){const svg=d3.select("#graph svg");svg.selectAll("*").remove();$("tip").textContent="Drag nodes, scroll to zoom. Larger nodes are imported more often; answers highlight their source files.";
+ const {width:W,height:H}=svg.node().getBoundingClientRect();const col=d3.scaleOrdinal(d3.schemeTableau10);
+ const root=svg.append("g");svg.call(d3.zoom().on("zoom",e=>root.attr("transform",e.transform)));
+ const sim=d3.forceSimulation(g.nodes).force("l",d3.forceLink(g.links).id(d=>d.id).distance(40)).force("c",d3.forceManyBody().strength(-60)).force("m",d3.forceCenter(W/2,H/2));
+ const link=root.append("g").attr("stroke","var(--line)").selectAll("line").data(g.links).join("line");
+ nodeSel=root.append("g").selectAll("circle").data(g.nodes).join("circle").attr("r",d=>4+Math.min(d.deg,12)).attr("fill",d=>col(d.group)).attr("stroke","var(--bg)")
+  .call(d3.drag().on("start",(e,d)=>{sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on("drag",(e,d)=>{d.fx=e.x;d.fy=e.y}).on("end",(e,d)=>{sim.alphaTarget(0);d.fx=d.fy=null}));
+ nodeSel.append("title").text(d=>d.id);
+ sim.on("tick",()=>{link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);nodeSel.attr("cx",d=>d.x).attr("cy",d=>d.y)})}
+</script></body></html>

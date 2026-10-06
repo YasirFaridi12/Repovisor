@@ -1,0 +1,10 @@
+.env
+.venv/
+data/
+__pycache__/
+*.pyc
+*.zip
+*.log
+start_hidden.vbs
+start_repovisor.bat
+stop_repovisor.bat
